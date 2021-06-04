@@ -2,9 +2,9 @@ package com.aaleksiev.rules
 
 import com.android.tools.lint.client.api.UElementHandler
 import com.android.tools.lint.detector.api.*
+import com.intellij.psi.impl.source.PsiClassReferenceType
 import org.jetbrains.kotlin.psi.*
 import org.jetbrains.uast.*
-import org.jetbrains.uast.kotlin.KotlinUBinaryExpression
 import org.jetbrains.uast.kotlin.KotlinUBlockExpression
 import org.jetbrains.uast.kotlin.KotlinUField
 import org.jetbrains.uast.visitor.AbstractUastVisitor
@@ -26,12 +26,27 @@ class ViewBindingsDetector : Detector(), Detector.UastScanner {
                     val body = node.uastBody?.asRenderString()
                     val expression = node.uastBody as? KotlinUBlockExpression
                     expression?.accept(object : AbstractUastVisitor() {
-                        override fun visitQualifiedReferenceExpression(node: UQualifiedReferenceExpression): Boolean {
-                            return super.visitQualifiedReferenceExpression(node)
+                        override fun visitSimpleNameReferenceExpression(node: USimpleNameReferenceExpression): Boolean {
+                            (node.getExpressionType() as PsiClassReferenceType)
+                            if (node.identifier == "binding") {
+                                val typeReference = node.sourcePsi
+                                    ?.children
+                                    ?.firstOrNull { it is KtTypeReference } as? KtTypeReference
+                                val typeArgument =
+                                    typeReference?.typeElement?.typeArgumentsAsTypes?.singleOrNull()
+                                if (typeArgument != null) {
+                                    return false
+                                }
+                                val expression = node.sourcePsi
+                                    ?.children
+                                    ?.firstOrNull { it is KtCallExpression } as? KtCallExpression
+                                val typeRef =
+                                    expression?.typeArguments?.singleOrNull()?.typeReference
+                                //(node.getExpressionType() as PsiClassReferenceType).superTypes.any { it is KtTypeReference }
+                            }
+                            return true
                         }
                     })
-                    val binaryExpression = expression?.expressions?.firstOrNull { it is KotlinUBinaryExpression }
-                    val binaryExpression1 = expression?.expressions?.firstOrNull { it is UastBinaryExpressionWithTypeKind }
                 }
             }
         }
