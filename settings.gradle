@@ -1,0 +1,3 @@
+include ':rules'
+include ':app'
+rootProject.name = "CustomLintRulePlaygound"
