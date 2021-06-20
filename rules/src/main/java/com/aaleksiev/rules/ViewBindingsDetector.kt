@@ -1,9 +1,11 @@
 package com.aaleksiev.rules
 
+import com.android.SdkConstants
 import com.android.tools.lint.client.api.UElementHandler
 import com.android.tools.lint.detector.api.*
 import com.intellij.psi.PsiType
 import org.jetbrains.kotlin.asJava.elements.KtLightMethodImpl
+import org.jetbrains.uast.UClass
 import org.jetbrains.uast.UElement
 import org.jetbrains.uast.UMethod
 import org.jetbrains.uast.USimpleNameReferenceExpression
@@ -11,64 +13,73 @@ import org.jetbrains.uast.kotlin.KotlinUBlockExpression
 import org.jetbrains.uast.visitor.AbstractUastVisitor
 
 @Suppress("UnstableApiUsage")
-class ViewBindingsDetector : Detector(), Detector.UastScanner {
-    override fun getApplicableUastTypes(): List<Class<out UElement?>> {
-        return listOf(UMethod::class.java)
+class ViewBindingsDetector : Detector(), SourceCodeScanner {
+    private val methodsToVisit by lazy {
+        listOf("onCreate", "onCreateView", "onSaveInstanceState", "onDestroy")
     }
 
-    override fun createUastHandler(context: JavaContext): UElementHandler {
-        return object : UElementHandler() {
-            override fun visitMethod(node: UMethod) {
-                val noteString = node.asRenderString()
-                println("CustomLint: visited $noteString")
-                val nodeName = node.name
-                if (nodeName.equals("onSaveInstanceState", ignoreCase = true)) {
-                    val expression = node.uastBody as? KotlinUBlockExpression
-                    expression?.accept(object : AbstractUastVisitor() {
-                        override fun visitSimpleNameReferenceExpression(node: USimpleNameReferenceExpression): Boolean {
-                            if (!isKotlin(node.sourcePsi)) return true
-                            node.resolve()?.let { element ->
-                                //node.getExpressionType()?.isConvertibleFrom(psiType)
-                                val psiType = PsiType.getTypeByName("androidx.viewbinding.ViewBinding", element.project, element.resolveScope)
-                                if ((element as? KtLightMethodImpl)?.returnTypeElement?.type?.isConvertibleFrom(psiType) == true) {
-                                    //report an issue
-                                    return false
-                                }
+    override fun applicableSuperClasses(): List<String> = listOf(SdkConstants.CLASS_FRAGMENT, SdkConstants.CLASS_V4_FRAGMENT.newName(), SdkConstants.CLASS_V4_FRAGMENT.oldName())
+
+    override fun visitClass(context: JavaContext, declaration: UClass) {
+        val viewBindingPsiType = PsiType.getTypeByName(
+                VIEW_BINDING_CLASS,
+                declaration.project,
+                declaration.resolveScope
+        )
+
+        declaration.accept(MethodVisitor(methodsToVisit) { visitedMethod ->
+            object : AbstractUastVisitor() {
+                override fun visitSimpleNameReferenceExpression(node: USimpleNameReferenceExpression): Boolean {
+                    if (isKotlin(node.sourcePsi)) {
+                        node.resolve()?.let { element ->
+                            val methodImpl = element as? KtLightMethodImpl
+                            if (methodImpl.isDescendantOf(viewBindingPsiType)) {
+                                //report an issue
+                                context.report(
+                                        ISSUE,
+                                        visitedMethod,
+                                        context.getLocation(node),
+                                        "[${visitedMethod.name}] Should not attempt to access view bindings after Fragment view was destroyed."
+                                )
                             }
-                            return true
                         }
-                    })
+                    }
+                    return super.visitSimpleNameReferenceExpression(node)
                 }
             }
-        }
+        })
+    }
+
+    private fun KtLightMethodImpl?.isDescendantOf(psiType: PsiType): Boolean = when {
+        this == null -> false
+        else -> returnType?.isAssignableFrom(psiType) == true ||
+                returnType?.superTypes
+                        ?.filter { superType ->
+                            !superType.canonicalText.equals(
+                                    "java.lang.Object",
+                                    ignoreCase = true
+                            )
+                        }
+                        ?.any { superType -> superType.isAssignableFrom(psiType) } == true
     }
 
     companion object {
+        private const val VIEW_BINDING_CLASS = "androidx.viewbinding.ViewBinding"
         /**
          * Issue describing the problem and pointing to the detector
          * implementation.
          */
-        @JvmField
-        val ISSUE: Issue = Issue.create(
-            // ID: used in @SuppressLint warnings etc
-            id = "ShortUniqueId",
-            // Title -- shown in the IDE's preference dialog, as category headers in the
-            // Analysis results window, etc
-            briefDescription = "Lint Mentions",
-            // Full explanation of the issue; you can use some markdown markup such as
-            // `monospace`, *italic*, and **bold**.
-            explanation = """
-                    This check highlights string literals in code which mentions the word `lint`. \
-                    Blah blah blah.
-                    Another paragraph here.
-                    """, // no need to .trimIndent(), lint does that automatically
-            category = Category.CORRECTNESS,
-            priority = 6,
-            severity = Severity.WARNING,
-            implementation = Implementation(
-                ViewBindingsDetector::class.java,
-                Scope.JAVA_FILE_SCOPE
-            )
+        val ISSUE = Issue.create(
+                id = "AccessDestroyedView",
+                briefDescription = "Accessing Fragment view after it was destroyed",
+                explanation = "This check ensures that Fragment View's are not accessed before onCreateView() or after onDestroyView().",
+                category = Category.INTEROPERABILITY_KOTLIN,
+                severity = Severity.FATAL,
+                implementation = Implementation(
+                        ViewBindingsDetector::class.java,
+                        Scope.JAVA_FILE_SCOPE
+                ),
+                androidSpecific = true
         )
     }
 }
